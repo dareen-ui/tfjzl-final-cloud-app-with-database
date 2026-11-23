@@ -1,0 +1,48 @@
+name: Run app and take screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'onlinecourse/**'
+      - 'ci/**'
+      - '.github/workflows/screenshots.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install "Django==4.2.3" "Pillow" pygments playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Migrate, seed and start the server
+        run: |
+          export ADMIN_PW=$(python -c "import secrets;print(secrets.token_urlsafe(16))")
+          export LEARNER_PW=$(python -c "import secrets;print(secrets.token_urlsafe(16))")
+          echo "::add-mask::$ADMIN_PW"; echo "::add-mask::$LEARNER_PW"
+          echo "ADMIN_PW=$ADMIN_PW" >> $GITHUB_ENV; echo "LEARNER_PW=$LEARNER_PW" >> $GITHUB_ENV
+          python manage.py makemigrations onlinecourse
+          python manage.py migrate
+          python manage.py shell < ci/seed.py
+          nohup python manage.py runserver 127.0.0.1:8000 > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -s http://127.0.0.1:8000/onlinecourse/ > /dev/null && break; sleep 1; done
+      - name: Take screenshots
+        run: python ci/shots.py
+      - name: Server log
+        if: always()
+        run: cat server.log || true
+      - name: Commit screenshots and migrations
+        if: always()
+        run: |
+          git config user.name "Dareen Alalyani"
+          git config user.email "dareen-ui@users.noreply.github.com"
+          git add screenshots onlinecourse/migrations || true
+          git commit -m "Add migrations and screenshots [skip ci]" || echo "No changes"
+          git push
